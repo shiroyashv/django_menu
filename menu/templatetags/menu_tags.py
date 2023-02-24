@@ -1,72 +1,49 @@
-import re
 from django import template
-from django.urls import reverse
+from django.utils.safestring import mark_safe
 
-from ..models import Menu
-
+from ..models import MenuItem
 
 register = template.Library()
 
-@register.simple_tag
-def draw_menu(menu_name, request):
-    try:
-        menu = Menu.get_menu(menu_name)
-        current_url = request.path
-        active_menu = None
-        for item in menu:
-            if item.url == current_url:
-                active_menu = item
-                break
-        return render_menu(menu, active_menu)
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(e)
 
-        return ''
+@register.simple_tag(takes_context=True)
+def draw_menu(context, menu_name):
+    menu_items = MenuItem.objects.filter(menu__name=menu_name)
 
-
-def render_menu(menu_items, active_url):
-    html = '<ul>'
+    active_item = None
     for item in menu_items:
-        li = '<li '
-        if item.url == active_url:
-            li = add_class(li, 'expanded')
-            li = add_class(li, 'active')
-            li += '<a href="%s">%s</a>' % (item.url, item.name)
-            li += render_children(item.children.all(), active_url)
-            li = add_class(li, 'expanded')
-        else:
-            li += '>'
-            li += '<a href="%s">%s</a>' % (item.url, item.name)
-            li += render_children(item.children.all(), active_url)
-        li += '</li>'
-        html += li
-    html += '</ul>'
-    return html
+        if item.is_active(context['request']):
+            active_item = item
+            break
 
-def render_children(children, active_url):
-    html = ""
-    for child in children:
-        li = '<li '
-        if child.url == active_url:
-            li = add_class(li, 'expanded')
-            li = add_class(li, 'active')
-            li += '<a href="%s">%s</a>' % (child.url, child.name)
-            li += render_children(child.children.all(), active_url)
-            li = add_class(li, 'expanded')
-        else:
-            li += '>'
-            li += '<a href="%s">%s</a>' % (child.url, child.name)
-            li += render_children(child.children.all(), active_url)
-        li += '</li>'
-        html += li
-    return html
+    menu_html = '<ul>'
 
-def add_class(li, class_name):
-    class_attr = 'class="%s"' % class_name
-    if 'class=' in li:
-        li = re.sub(r'class="([^"]+)"', r'class="\1 %s"' % class_name, li)
-    else:
-        li = li.replace('>', ' %s>' % class_attr)
-    return li
+    menu_dict = {}
+    for item in menu_items:
+        parent_id = item.parent_id
+        if parent_id in menu_dict:
+            menu_dict[parent_id].append(item)
+        else:
+            menu_dict[parent_id] = [item]
+
+    def build_menu(item, menu_dict, active_item):
+        menu_html = ''
+        active_class = 'active' if active_item == item else ''
+        dropdown_class = 'dropdown' if item.is_dropdown() else ''
+        expanded_class = 'expanded' if active_item and (active_item == item or active_item.parent == item) else ''
+        menu_html += f'<li class="{dropdown_class} {expanded_class}">'
+        menu_html += f'<a class="{active_class}" href="{item.url}">{item.name}</a>'
+        if item.id in menu_dict:
+            menu_html += '<ul>'
+            for child_item in menu_dict[item.id]:
+                menu_html += build_menu(child_item, menu_dict, active_item)
+            menu_html += '</ul>'
+        menu_html += '</li>'
+        return menu_html
+
+    root_items = menu_dict.get(None, [])
+    for item in root_items:
+        menu_html += build_menu(item, menu_dict, active_item)
+
+    menu_html += '</ul>'
+    return mark_safe(menu_html)
